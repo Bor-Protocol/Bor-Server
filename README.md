@@ -9,6 +9,7 @@ A real-time streaming backend service built with Node.js, Express, Socket.IO, an
 - [Running the Server](#running-the-server)
 - [Architecture Overview](#architecture-overview)
 - [API Documentation](#api-documentation)
+- [📚 Additional Resources](#additional-resources)
 
 ## Prerequisites
 
@@ -22,8 +23,7 @@ Before you begin, ensure you have the following installed:
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-username/borp-server.git
-cd borp-server
+git clone https://github.com/Bor-Protocol/Bor-Server.git
 ```
 
 2. Install dependencies:
@@ -41,32 +41,20 @@ cp copy.env .env
 1. Configure your `.env` file with the following variables:
 ```env
 PORT=6969
-MONGO_URI=your_SQLITE_connection_string
 BUNNY_STORAGE_API_KEY=your_bunny_cdn_key
 ```
 
-2. For SQLITE Atlas setup:
-   - Create an account at [SQLITE Atlas](https://www.SQLITE.com/cloud/atlas)
-   - Create a new cluster
-   - Get your connection string
-   - Replace `your_SQLITE_connection_string` in `.env`
 
 ## Running the Server
 
-1. Start SQLITE (if using local instance):
-```bash
-mongod
-```
+1. Start SQLITE (if using local instance)
+
 
 2. Run the server in development mode:
 ```bash
-bun run dev
+node --inspect src/index.js  
 ```
 
-3. For production:
-```bash
-bun start
-```
 
 4. Using Docker:
 ```bash
@@ -162,3 +150,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 
 to launch in debug mode : node --inspect src/index.js    
+
+## 📚 Additional Resources
+
+- [Socket.IO Documentation](https://socket.io/docs/)
+- [Express.js Guide](https://expressjs.com/guide)
+- [SQLite Documentation](https://sqlite.org/docs.html)
+- [BunnyCDN Documentation](https://docs.bunny.net/)
