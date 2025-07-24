@@ -9,6 +9,13 @@ import { Filter } from 'bad-words';
 import * as badwordsList from 'badwords-list';
 import { uploadAudioToBunnyCDN } from './upload/uploadCdn.js';
 import { initDatabase } from './config/database.js';
+import { 
+  socketAuthMiddleware, 
+  authenticateApiToken, 
+  optionalAuth,
+  requireAuth,
+  checkAgentPermissions 
+} from './middleware/auth-simple.js';
 
 // Import models
 import Comment from '../models/Comment.js';
@@ -28,7 +35,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Configure Socket.IO with CORS
+// Configure Socket.IO with CORS and authentication
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
@@ -37,6 +44,9 @@ const io = new Server(httpServer, {
     credentials: true
   }
 });
+
+// Apply authentication middleware to all socket connections
+io.use(socketAuthMiddleware);
 
 // Initialize counters
 let commentCount = 0;
@@ -159,11 +169,15 @@ function getConnectedPeers() {
 
 // Update the socket connection handler
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+  const userInfo = socket.user ? `${socket.user.email} (${socket.user.id})` : 'anonymous';
+  console.log(`Client connected: ${socket.id} - User: ${userInfo}`);
 
+  // Send initial state with user authentication status
   socket.emit('initial_state', {
     peerCount: getConnectedPeers(),
-    commentCount
+    commentCount,
+    authenticated: socket.user?.isAuthenticated || false,
+    user: socket.user ? { id: socket.user.id, email: socket.user.email } : null
   });
 
   io.emit('peer_count', { count: getConnectedPeers() });
@@ -174,6 +188,13 @@ io.on('connection', (socket) => {
 
   socket.on('new_comment', async (data) => {
     console.log('new_comment event received:', { socketId: socket.id, data });
+    
+    // Check authentication for commenting
+    if (!requireAuth(socket, (error) => {
+      socket.emit('comment_error', error);
+    })) {
+      return;
+    }
     
     const { comment, agentId } = data;
     try {
@@ -192,13 +213,15 @@ io.on('connection', (socket) => {
       
       const filteredMessage = filterProfanity(comment.message);
       
+      // Include authenticated user information
       const newComment = await Comment.create({
         id: messageId,
         message: filteredMessage,
         agentId,
-        user: comment.user,
-        avatar: comment.avatar,
-        handle: comment.handle
+        user: socket.user.email, // Use authenticated user email
+        avatar: comment.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${socket.user.id}`,
+        handle: comment.handle || socket.user.email.split('@')[0],
+        userId: socket.user.id // Store user ID for tracking
       });
 
       io.emit('comment_received', { 
@@ -214,6 +237,10 @@ io.on('connection', (socket) => {
       }
     } catch (error) {
       console.error('Error handling new_comment:', error);
+      socket.emit('comment_error', { 
+        success: false, 
+        error: 'Failed to post comment' 
+      });
     }
   });
 
@@ -223,6 +250,13 @@ io.on('connection', (socket) => {
 
   // Add these new socket event handlers
   socket.on('join_agent_stream', (agentId) => {
+    // Authenticate users for joining agent streams
+    if (!checkAgentPermissions(socket, agentId, (error) => {
+      socket.emit('stream_join_error', error);
+    })) {
+      return;
+    }
+
     const previousStream = socketToStream.get(socket.id);
     if (previousStream) {
       agentViewers.get(previousStream)?.delete(socket.id);
@@ -234,7 +268,13 @@ io.on('connection', (socket) => {
     }
     agentViewers.get(agentId)?.add(socket.id);
 
+    // Log authenticated user joining stream
+    console.log(`User ${socket.user.email} joined agent ${agentId} stream`);
+
     emitStreamCounts(); // Emit updated counts to all clients
+    
+    // Confirm successful join
+    socket.emit('stream_joined', { agentId, authenticated: true });
   });
 
   socket.on('leave_agent_stream', (agentId) => {
@@ -248,6 +288,11 @@ io.on('connection', (socket) => {
     // Clean up empty sets
     if (viewerCount === 0) {
       agentViewers.delete(agentId);
+    }
+
+    // Log user leaving stream
+    if (socket.user) {
+      console.log(`User ${socket.user.email} left agent ${agentId} stream`);
     }
   });
 
@@ -544,7 +589,7 @@ async function markCommentsAsRead(commentIds) {
     return { success: false, error: 'Failed to mark comments as read' };
   }
 }
-app.post('/api/comments/mark-read', async (req, res) => {
+app.post('/api/comments/mark-read', authenticateApiToken, async (req, res) => {
   try {
     const { commentIds } = req.body;
 
@@ -559,7 +604,8 @@ app.post('/api/comments/mark-read', async (req, res) => {
 
     res.json({
       success: true,
-      modifiedCount: result.modifiedCount
+      modifiedCount: result.modifiedCount,
+      user: req.user.email // Include authenticated user info
     });
   } catch (error) {
     console.error('Error marking comments as read:', error);
