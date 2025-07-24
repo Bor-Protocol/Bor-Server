@@ -3,8 +3,11 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { Op } from 'sequelize';
+import sequelize from './config/database.js';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import { Filter } from 'bad-words';
 import * as badwordsList from 'badwords-list';
 import { uploadAudioToBunnyCDN } from './upload/uploadCdn.js';
@@ -19,9 +22,16 @@ import {
 
 // Import models
 import Comment from '../models/Comment.js';
+import User from '../models/User.js';
 
 // Initialize environment variables
 dotenv.config();
+
+// JWT Configuration
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+const JWT_EXPIRE = process.env.JWT_EXPIRE || '1h';
+const REFRESH_TOKEN_EXPIRE = process.env.REFRESH_TOKEN_EXPIRE || '7d';
+const BCRYPT_ROUNDS = 12;
 
 const app = express();
 const httpServer = createServer(app);
@@ -56,8 +66,13 @@ initDatabase()
   .then(async () => {
     console.log('Connected to SQLite successfully');
     try {
+      // Sync User model
+      await User.sync();
+      console.log('User model synchronized');
+      
       commentCount = await Comment.count();
-      console.log('Initial counts loaded - Comments:', commentCount);
+      const userCount = await User.count();
+      console.log('Initial counts loaded - Comments:', commentCount, 'Users:', userCount);
     } catch (error) {
       console.error('Error initializing counts:', error);
     }
@@ -304,11 +319,532 @@ io.on('connection', (socket) => {
       socketToStream.delete(socket.id);
       emitStreamCounts(); // Emit updated counts to all clients
     }
-    console.log('Client disconnected:', socket.id);
+    
+    const userInfo = socket.user ? `${socket.user.email} (${socket.user.id})` : 'anonymous';
+    console.log(`Client disconnected: ${socket.id} - User: ${userInfo}`);
+    
+    // Emit updated peer count to all remaining clients
+    io.emit('peer_count', { count: getConnectedPeers() });
   });
 });
 
 /******************** */
+
+/*organize************** */
+//authentication api endpoints
+// Real database-backed authentication using User model
+
+// User registration endpoint
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    // Validate input
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Name, email, and password are required'
+      });
+    }
+
+    // Validate password strength
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 8 characters long'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid email format'
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ where: { email: email.toLowerCase() } });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        error: 'User with this email already exists'
+      });
+    }
+
+    // Hash password with bcrypt
+    const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+    // Create new user in database
+    const userId = Date.now().toString();
+    const user = await User.create({
+      id: userId,
+      name: name.trim(),
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      points: 100,
+      user_type: 'user',
+      subscription_tier: 'free',
+      is_active: true,
+      email_verified: false,
+      auth_provider: 'local',
+      total_sessions: 0,
+      points_next_regen: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      last_login: new Date()
+    });
+
+    // Generate real JWT tokens
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      userType: user.user_type
+    };
+
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRE });
+    const refreshToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRE });
+
+    // Remove password from response
+    const { password: _, ...userResponse } = user.toJSON();
+
+    res.status(201).json({
+      success: true,
+      user: userResponse,
+      token,
+      refreshToken
+    });
+
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during signup'
+    });
+  }
+});
+
+// User login endpoint
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required'
+      });
+    }
+
+    // Find user in database (debug logging)
+    console.log(`Login attempt for email: ${email.toLowerCase()}`);
+    const user = await User.findOne({ where: { email: email.toLowerCase() } });
+    
+    if (!user) {
+      console.log(`User not found for email: ${email.toLowerCase()}`);
+      // Check if user exists with different case
+      const userAnyCase = await User.findOne({ 
+        where: sequelize.where(
+          sequelize.fn('LOWER', sequelize.col('email')), 
+          email.toLowerCase()
+        )
+      });
+      if (userAnyCase) {
+        console.log(`Found user with different case: ${userAnyCase.email}`);
+      }
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid email or password'
+      });
+    }
+
+    console.log(`User found: ${user.email}, checking password...`);
+    
+    // Handle users who might not have bcrypt passwords (legacy or test users)
+    if (!user.password) {
+      console.log('User has no password set');
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid email or password'
+      });
+    }
+
+    // Verify password with bcrypt
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    console.log(`Password validation result: ${isPasswordValid}`);
+    
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid email or password'
+      });
+    }
+
+    // Check if account is active
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        error: 'Account is deactivated. Please contact support.'
+      });
+    }
+
+    // Generate real JWT tokens
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      userType: user.user_type
+    };
+
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRE });
+    const refreshToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRE });
+
+    // Update last login and session count in database
+    await user.update({
+      last_login: new Date(),
+      total_sessions: user.total_sessions + 1
+    });
+
+    // Remove password from response
+    const { password: _, ...userResponse } = user.toJSON();
+
+    res.json({
+      success: true,
+      user: userResponse,
+      token,
+      refreshToken
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during login'
+    });
+  }
+});
+
+// Token refresh endpoint
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(403).json({
+        success: false,
+        error: 'Refresh token is required'
+      });
+    }
+
+    // Verify refresh token
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(403).json({
+        success: false,
+        error: 'Invalid or expired refresh token'
+      });
+    }
+
+    // Find user by ID from token in database
+    const user = await User.findByPk(decoded.userId);
+    if (!user) {
+      return res.status(403).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Check if account is still active
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        error: 'Account is deactivated'
+      });
+    }
+
+    // Generate new tokens
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      userType: user.user_type
+    };
+
+    const newToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRE });
+    const newRefreshToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRE });
+
+    // Update last activity in database
+    await user.update({ last_login: new Date() });
+
+    // Remove password from response
+    const { password: _, ...userResponse } = user.toJSON();
+
+    res.json({
+      success: true,
+      user: userResponse,
+      token: newToken,
+      refreshToken: newRefreshToken
+    });
+
+  } catch (error) {
+    console.error('Token refresh error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during token refresh'
+    });
+  }
+});
+
+// Get current user endpoint
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Access token required'
+      });
+    }
+
+    // Verify JWT token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired access token'
+      });
+    }
+
+    // Find user by ID from token in database
+    const user = await User.findByPk(decoded.userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Check if account is still active
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        error: 'Account is deactivated'
+      });
+    }
+
+    // Remove password from response
+    const { password: _, ...userResponse } = user.toJSON();
+
+    res.json({
+      success: true,
+      user: userResponse
+    });
+
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// Spend points endpoint
+app.post('/api/users/spend-points', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Access token required'
+      });
+    }
+
+    // Verify JWT token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired access token'
+      });
+    }
+
+    const { amount, reason } = req.body;
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid amount'
+      });
+    }
+
+    // Find user by ID from token in database
+    const user = await User.findByPk(decoded.userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Check if account is active
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        error: 'Account is deactivated'
+      });
+    }
+
+    if (user.points < amount) {
+      return res.status(400).json({
+        success: false,
+        error: 'Insufficient points'
+      });
+    }
+
+    // Update user points in database
+    await user.update({ 
+      points: user.points - amount 
+    });
+
+    // Log transaction
+    console.log(`Points transaction: User ${user.email} spent ${amount} points. Reason: ${reason || 'Not specified'}. New balance: ${user.points - amount}`);
+
+    res.json({
+      success: true,
+      newBalance: user.points - amount,
+      transaction: {
+        amount,
+        reason: reason || 'Points spent',
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Spend points error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// Debug endpoint to check users (remove in production)
+app.get('/api/debug/users', async (req, res) => {
+  try {
+    const users = await User.findAll({
+      attributes: ['id', 'name', 'email', 'auth_provider', 'createdAt', 'last_login'],
+      order: [['createdAt', 'DESC']],
+      limit: 10
+    });
+    
+    res.json({
+      success: true,
+      count: users.length,
+      users: users.map(user => ({
+        ...user.toJSON(),
+        hasPassword: !!user.password
+      }))
+    });
+  } catch (error) {
+    console.error('Debug users error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch users'
+    });
+  }
+});
+
+// Google OAuth endpoint
+app.post('/api/auth/google', async (req, res) => {
+  try {
+    const { credential, googleUser } = req.body;
+
+    if (!googleUser || !googleUser.email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid Google user data'
+      });
+    }
+
+    const email = googleUser.email.toLowerCase();
+    let user = await User.findOne({ where: { email } });
+    let isNewUser = false;
+
+    if (!user) {
+      // Create new user from Google data
+      const userId = Date.now().toString();
+      user = await User.create({
+        id: userId,
+        name: googleUser.name || googleUser.email.split('@')[0],
+        email: email,
+        password: null, // OAuth users don't have passwords
+        google_id: googleUser.id,
+        avatar: googleUser.picture,
+        points: 100,
+        user_type: 'user',
+        subscription_tier: 'free',
+        is_active: true,
+        email_verified: googleUser.email_verified || true,
+        auth_provider: 'google',
+        total_sessions: 0,
+        points_next_regen: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        last_login: new Date()
+      });
+      
+      isNewUser = true;
+      console.log(`New Google user created: ${email}`);
+    } else {
+      // Update existing user's Google data
+      await user.update({
+        google_id: googleUser.id,
+        avatar: googleUser.picture,
+        email_verified: true,
+        auth_provider: 'google',
+        total_sessions: user.total_sessions + 1,
+        last_login: new Date()
+      });
+      
+      console.log(`Existing user logged in via Google: ${email}`);
+    }
+
+    // Generate real JWT tokens
+    const payload = {
+      userId: user.id,
+      email: user.email,
+      userType: user.user_type,
+      authProvider: 'google'
+    };
+
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRE });
+    const refreshToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRE });
+
+    // Remove password from response
+    const { password: _, ...userResponse } = user.toJSON();
+
+    res.json({
+      success: true,
+      user: userResponse,
+      token,
+      refreshToken,
+      isNewUser
+    });
+
+  } catch (error) {
+    console.error('Google OAuth error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during Google authentication'
+    });
+  }
+});
 
 /*organize************** */
 //api works : 
@@ -486,9 +1022,9 @@ app.post('/api/ai-responses', async (req, res) => {
 
     if (requestBody.replyToUser) {
       try {
-        const userProfile = await UserProfile.findOne({ publicKey: requestBody.replyToUser });
-        handle = userProfile?.handle;
-        pfp = userProfile?.pfp;
+        // UserProfile model not implemented yet, skip for now
+        handle = requestBody.replyToUser;
+        pfp = null;
       } catch (error) {
         console.error('Error fetching user profile:', error);
         // Continue execution without the profile info rather than failing the whole request

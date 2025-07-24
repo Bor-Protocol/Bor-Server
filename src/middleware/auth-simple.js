@@ -1,17 +1,21 @@
-// Temporary auth middleware without JWT dependency
-// Use this until jsonwebtoken is installed
+// Real JWT authentication middleware
+import jwt from 'jsonwebtoken';
 
-// Simple token verification without JWT
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+
+// Real JWT token verification
 export const verifyToken = (token) => {
   try {
-    // Mock verification for demo purposes
-    if (token && token.length > 10) {
-      return { 
-        userId: 'demo-user-id', 
-        email: 'demo@bor.ai' 
-      };
-    }
-    return null;
+    if (!token) return null;
+    
+    // Verify JWT token
+    const decoded = jwt.verify(token, JWT_SECRET);
+    return {
+      userId: decoded.userId,
+      email: decoded.email,
+      userType: decoded.userType,
+      isAuthenticated: true
+    };
   } catch (error) {
     console.error('Token verification error:', error.message);
     return null;

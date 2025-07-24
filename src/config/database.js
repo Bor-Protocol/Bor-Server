@@ -10,7 +10,8 @@ export const initDatabase = async () => {
   try {
     await sequelize.authenticate();
     console.log('Connected to SQLite database successfully');
-    await sequelize.sync({ alter: true });
+    // Use { force: false } to avoid recreating tables and losing data
+    await sequelize.sync({ force: false });
     console.log('Database synchronized');
   } catch (error) {
     console.error('Unable to connect to database:', error);
