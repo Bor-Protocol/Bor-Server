@@ -2,6 +2,7 @@
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+const FREE_MODEL_AGENT_ID = process.env.FREE_MODEL_AGENT_ID || '795df77f-1620-07db-bd9a-0e2dfefef248';
 
 // Real JWT token verification
 export const verifyToken = (token) => {
@@ -112,12 +113,35 @@ export const requireAuth = (socket, callback) => {
   return true;
 };
 
-// Check user permissions for agent-specific actions
-export const checkAgentPermissions = (socket, agentId, callback) => {
+// Check if user is authenticated for commenting (allows free access to Trump model)
+export const requireAuthForComment = (socket, agentId, callback) => {
+  // Allow free access to Trump model
+  if (agentId === FREE_MODEL_AGENT_ID) {
+    return true;
+  }
+  
+  // Require authentication for other models
   if (!socket.user || !socket.user.isAuthenticated) {
     return callback({
       success: false,
-      error: 'Authentication required to interact with agents'
+      error: 'Authentication required to comment on this model'
+    });
+  }
+  return true;
+};
+
+// Check user permissions for agent-specific actions
+export const checkAgentPermissions = (socket, agentId, callback) => {
+  // Allow free access to Trump model
+  if (agentId === FREE_MODEL_AGENT_ID) {
+    return true;
+  }
+  
+  // Require authentication for other models
+  if (!socket.user || !socket.user.isAuthenticated) {
+    return callback({
+      success: false,
+      error: 'Authentication required to interact with this agent'
     });
   }
   return true;

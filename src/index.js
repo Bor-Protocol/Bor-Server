@@ -17,6 +17,7 @@ import {
   authenticateApiToken, 
   optionalAuth,
   requireAuth,
+  requireAuthForComment,
   checkAgentPermissions 
 } from './middleware/auth-simple.js';
 
@@ -34,6 +35,13 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-i
 const JWT_EXPIRE = process.env.JWT_EXPIRE || '1h';
 const REFRESH_TOKEN_EXPIRE = process.env.REFRESH_TOKEN_EXPIRE || '7d';
 const BCRYPT_ROUNDS = 12;
+
+// Session Configuration
+const PRIVATE_SESSION_DURATION_MINUTES = parseInt(process.env.PRIVATE_SESSION_DURATION_MINUTES) || 1;
+const SESSION_WARNING_MINUTES = parseFloat(process.env.SESSION_WARNING_MINUTES) || 0.5;
+
+// Model Access Configuration
+const FREE_MODEL_AGENT_ID = process.env.FREE_MODEL_AGENT_ID || '795df77f-1620-07db-bd9a-0e2dfefef248';
 
 const app = express();
 const httpServer = createServer(app);
@@ -414,7 +422,7 @@ async function startNextSession(agentId) {
   
   // Start the session
   const startTime = new Date();
-  const endTime = new Date(startTime.getTime() + 5 * 60 * 1000); // 5 minutes
+  const endTime = new Date(startTime.getTime() + PRIVATE_SESSION_DURATION_MINUTES * 60 * 1000);
   
   activeSessions.set(agentId, {
     sessionId,
@@ -457,10 +465,10 @@ async function startNextSession(agentId) {
     
     // Notify next user in queue about upcoming session
     notifyNextUserInQueue(agentId);
-  }, 4 * 60 * 1000);
+  }, (PRIVATE_SESSION_DURATION_MINUTES - SESSION_WARNING_MINUTES) * 60 * 1000);
   
   // Set timer to end session
-  setTimeout(() => endSession(sessionId), 5 * 60 * 1000);
+  setTimeout(() => endSession(sessionId), PRIVATE_SESSION_DURATION_MINUTES * 60 * 1000);
   
   return { sessionId, userId, startTime, endTime };
 }
@@ -605,14 +613,14 @@ io.on('connection', (socket) => {
   socket.on('new_comment', async (data) => {
     console.log('new_comment event received:', { socketId: socket.id, data });
     
-    // Check authentication for commenting
-    if (!requireAuth(socket, (error) => {
+    const { comment, agentId } = data;
+    
+    // Check authentication for commenting (allows free access to Trump model)
+    if (!requireAuthForComment(socket, agentId, (error) => {
       socket.emit('comment_error', error);
     })) {
       return;
     }
-    
-    const { comment, agentId } = data;
     try {
       // Prevent duplicate processing
       const messageId = comment.id || Date.now().toString();
@@ -629,15 +637,20 @@ io.on('connection', (socket) => {
       
       const filteredMessage = filterProfanity(comment.message);
       
-      // Include authenticated user information
+      // Handle both authenticated and anonymous users (for free model)
+      const isAuthenticated = socket.user && socket.user.isAuthenticated;
+      const userId = isAuthenticated ? socket.user.id : `anonymous_${Date.now()}`;
+      const userEmail = isAuthenticated ? socket.user.email : 'anonymous';
+      const userHandle = comment.handle || (isAuthenticated ? socket.user.email.split('@')[0] : 'Anonymous');
+      
       const newComment = await Comment.create({
         id: messageId,
         message: filteredMessage,
         agentId,
-        user: socket.user.email, // Use authenticated user email
-        avatar: comment.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${socket.user.id}`,
-        handle: comment.handle || socket.user.email.split('@')[0],
-        userId: socket.user.id // Store user ID for tracking
+        user: userEmail,
+        avatar: comment.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
+        handle: userHandle,
+        userId: userId
       });
 
       io.emit('comment_received', { 
@@ -684,13 +697,17 @@ io.on('connection', (socket) => {
     }
     agentViewers.get(agentId)?.add(socket.id);
 
-    // Log authenticated user joining stream
-    console.log(`User ${socket.user.email} joined agent ${agentId} stream`);
+    // Log user joining stream
+    const userIdentifier = socket.user ? socket.user.email : 'anonymous';
+    console.log(`User ${userIdentifier} joined agent ${agentId} stream`);
 
     emitStreamCounts(); // Emit updated counts to all clients
     
     // Confirm successful join
-    socket.emit('stream_joined', { agentId, authenticated: true });
+    socket.emit('stream_joined', { 
+      agentId, 
+      authenticated: socket.user ? socket.user.isAuthenticated : false 
+    });
   });
 
   socket.on('leave_agent_stream', (agentId) => {
@@ -1276,7 +1293,7 @@ app.post('/api/sessions/book-private', async (req, res) => {
     if (!activeSession) {
       // Agent is available, start session immediately
       const startTime = new Date();
-      const endTime = new Date(startTime.getTime() + 5 * 60 * 1000); // 5 minutes
+      const endTime = new Date(startTime.getTime() + PRIVATE_SESSION_DURATION_MINUTES * 60 * 1000);
       
       activeSessions.set(agentId, {
         sessionId,
@@ -1319,10 +1336,10 @@ app.post('/api/sessions/book-private', async (req, res) => {
         
         // Notify next user in queue about upcoming session
         notifyNextUserInQueue(agentId);
-      }, 4 * 60 * 1000);
+      }, (PRIVATE_SESSION_DURATION_MINUTES - SESSION_WARNING_MINUTES) * 60 * 1000);
       
       // Set timer to end session
-      setTimeout(() => endSession(sessionId), 5 * 60 * 1000);
+      setTimeout(() => endSession(sessionId), PRIVATE_SESSION_DURATION_MINUTES * 60 * 1000);
       
       res.json({
         success: true,
@@ -1846,24 +1863,50 @@ app.get('/api/streams/:agentId/stats', async (req, res) => {
 //emit
 
 // Update the chat history endpoint
-app.get('/api/agents/:agentId/chat-history', async (req, res) => {
+app.get('/api/agents/:agentId/chat-history', optionalAuth, async (req, res) => {
   try {
     const { agentId } = req.params;
     const limit = parseInt(req.query.limit) || 50;
     const before = req.query.before ? new Date(req.query.before) : new Date();
 
+    // Build where clause based on model type
+    const whereClause = {
+      agentId,
+      createdAt: { [Op.lt]: before }
+    };
+    
+    console.log('Chat history request:', {
+      agentId,
+      isFreeModel: agentId === FREE_MODEL_AGENT_ID,
+      userAuthenticated: !!req.user,
+      userEmail: req.user?.email
+    });
+    
+    // For private models, filter by authenticated user
+    if (agentId !== FREE_MODEL_AGENT_ID && req.user) {
+      // Filter by user email only (messageType column doesn't exist yet)
+      whereClause.user = req.user.email;
+      console.log('Filtering by user email:', req.user.email);
+    } else if (agentId !== FREE_MODEL_AGENT_ID && !req.user) {
+      // If accessing private model without auth, return empty
+      console.log('Private model accessed without authentication');
+      return res.json({ chatHistory: [] });
+    }
+    
     // Fetch comments and AI responses in parallel
     const [comments] = await Promise.all([
       Comment.findAll({
-        where: {
-          agentId,
-          createdAt: { [Op.lt]: before }
-        },
+        where: whereClause,
         order: [['createdAt', 'DESC']],
         limit,
         raw: true
       })
     ]);
+    
+    console.log('Found comments:', comments.length);
+    if (comments.length > 0) {
+      console.log('First comment user:', comments[0].user);
+    }
 
     // Transform and combine the results
     const chatHistory = [
