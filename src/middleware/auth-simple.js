@@ -102,8 +102,38 @@ export const optionalAuth = (req, res, next) => {
   next();
 };
 
+// Express middleware for authentication
+export const requireAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      error: 'Access token required'
+    });
+  }
+
+  const decoded = verifyToken(token);
+  if (!decoded) {
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid or expired access token'
+    });
+  }
+
+  // Attach user info to request
+  req.user = {
+    id: decoded.userId,
+    email: decoded.email,
+    userType: decoded.userType
+  };
+
+  next();
+};
+
 // Check if user is authenticated for socket events
-export const requireAuth = (socket, callback) => {
+export const requireSocketAuth = (socket, callback) => {
   if (!socket.user || !socket.user.isAuthenticated) {
     return callback({
       success: false,

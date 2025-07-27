@@ -17,6 +17,7 @@ import {
   authenticateApiToken, 
   optionalAuth,
   requireAuth,
+  requireSocketAuth,
   requireAuthForComment,
   checkAgentPermissions 
 } from './middleware/auth-simple.js';
@@ -26,6 +27,8 @@ import Comment from '../models/Comment.js';
 import User from '../models/User.js';
 import Transaction from '../models/Transaction.js';
 import Session from '../models/Session.js';
+import Queue from '../models/Queue.js';
+import ModelConfig from '../models/ModelConfig.js';
 
 // Initialize environment variables
 dotenv.config();
@@ -71,6 +74,157 @@ io.use(socketAuthMiddleware);
 // Initialize counters
 let commentCount = 0;
 
+// Session management helper functions
+
+async function processModelQueue(agentId) {
+  try {
+    // Find next person in queue
+    const nextInQueue = await Queue.findOne({
+      where: {
+        agentId,
+        status: 'waiting'
+      },
+      order: [['position', 'ASC']]
+    });
+
+    if (!nextInQueue) {
+      console.log(`No one in queue for agent ${agentId}`);
+      return;
+    }
+
+    // Get model configuration
+    const modelConfig = await ModelConfig.findOne({
+      where: { agentId }
+    });
+
+    if (!modelConfig) {
+      console.error(`Model config not found for agent ${agentId}`);
+      return;
+    }
+
+    // Check if user still has enough points and is valid
+    const user = await User.findByPk(nextInQueue.userId);
+    if (!user || user.points < modelConfig.pointsCost) {
+      // Remove from queue and try next
+      await Queue.update(
+        { status: 'expired' },
+        { where: { id: nextInQueue.id } }
+      );
+      return processModelQueue(agentId); // Try next person
+    }
+
+    // Deduct points
+    const result = await spendUserPoints(
+      nextInQueue.userId,
+      modelConfig.pointsCost,
+      `Private session with ${modelConfig.displayName}`,
+      nextInQueue.id
+    );
+
+    if (!result.success) {
+      await Queue.update(
+        { status: 'expired' },
+        { where: { id: nextInQueue.id } }
+      );
+      return processModelQueue(agentId); // Try next person
+    }
+
+    // Create session
+    const sessionId = Date.now().toString() + Math.random().toString(36).substring(2, 11);
+    const startTime = new Date();
+    const endTime = new Date(startTime.getTime() + modelConfig.sessionDurationMinutes * 60 * 1000);
+
+    await Session.create({
+      id: sessionId,
+      userId: nextInQueue.userId,
+      agentId: modelConfig.agentId,
+      type: 'private',
+      status: 'active',
+      duration: modelConfig.sessionDurationMinutes,
+      pointsCost: modelConfig.pointsCost,
+      startTime,
+      endTime
+    });
+
+    // Update queue status
+    await Queue.update(
+      { status: 'completed' },
+      { where: { id: nextInQueue.id } }
+    );
+
+    // Set session end timer
+    setTimeout(() => {
+      endSession(sessionId);
+    }, modelConfig.sessionDurationMinutes * 60 * 1000);
+
+    // TODO: Notify user that their session is ready
+    console.log(`Started session ${sessionId} for user ${nextInQueue.userId} from queue`);
+
+  } catch (error) {
+    console.error('Error processing queue:', error);
+  }
+}
+
+// Seed model configurations function
+async function seedModelConfigurations() {
+  try {
+    // Check if configurations already exist
+    const existingConfigs = await ModelConfig.count();
+    if (existingConfigs > 0) {
+      console.log('Model configurations already exist, skipping seed');
+      return;
+    }
+
+    // Create default model configurations
+    const configs = [
+      {
+        id: 'trump-config',
+        agentId: FREE_MODEL_AGENT_ID, // Trump model from constants
+        modelName: 'trump',
+        displayName: 'Trump AI',
+        accessType: 'free',
+        pointsCost: 0,
+        maxConcurrentSessions: 100,
+        sessionDurationMinutes: 0, // Unlimited for free model
+        isActive: true,
+        description: 'Free AI model - chat without limits'
+      },
+      {
+        id: 'borp-config',
+        agentId: '6a5f7f7c-45c3-4b8a-9d8e-2f3a4b5c6d7e', // Borp agent ID
+        modelName: 'borp',
+        displayName: 'Borp AI',
+        accessType: 'premium',
+        pointsCost: 50,
+        maxConcurrentSessions: 5,
+        sessionDurationMinutes: 5,
+        isActive: true,
+        description: 'Premium AI model - private 5-minute sessions'
+      },
+      {
+        id: 'alpha-config',
+        agentId: 'alpha-agent-id', // Alpha agent ID
+        modelName: 'alpha',
+        displayName: 'Agent Alpha',
+        accessType: 'premium',
+        pointsCost: 75,
+        maxConcurrentSessions: 1,
+        sessionDurationMinutes: 5,
+        isActive: true,
+        description: 'Premium AI model - exclusive private sessions'
+      }
+    ];
+
+    for (const config of configs) {
+      await ModelConfig.create(config);
+    }
+
+    console.log('✅ Model configurations seeded successfully');
+  } catch (error) {
+    console.error('❌ Error seeding model configurations:', error);
+  }
+}
+
 // Initialize database
 initDatabase()
   .then(async () => {
@@ -80,7 +234,12 @@ initDatabase()
       await User.sync();
       await Transaction.sync();
       await Session.sync();
+      await Queue.sync();
+      await ModelConfig.sync();
       console.log('All models synchronized');
+      
+      // Seed model configurations
+      await seedModelConfigurations();
       
       commentCount = await Comment.count();
       const userCount = await User.count();
@@ -203,7 +362,7 @@ async function createTransaction(userId, type, amount, description, relatedId = 
     const balanceAfter = type === 'spend' ? balanceBefore - amount : balanceBefore + amount;
 
     const transaction = await Transaction.create({
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+      id: Date.now().toString() + Math.random().toString(36).substring(2, 11),
       userId,
       type,
       amount,
@@ -1217,7 +1376,365 @@ app.get('/api/users/points-history', async (req, res) => {
   }
 });
 
-// Book private session with points
+// Get available models
+app.get('/api/models', async (req, res) => {
+  try {
+    const models = await ModelConfig.findAll({
+      where: { isActive: true },
+      attributes: ['modelName', 'displayName', 'accessType', 'pointsCost', 'description', 'sessionDurationMinutes']
+    });
+
+    res.json({
+      success: true,
+      models
+    });
+  } catch (error) {
+    console.error('Error fetching models:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch models'
+    });
+  }
+});
+
+// Check model access and availability
+app.post('/api/models/:modelName/check-access', async (req, res) => {
+  try {
+    const { modelName } = req.params;
+    
+    // Get model configuration first to check if it's free
+    const modelConfig = await ModelConfig.findOne({
+      where: { modelName, isActive: true }
+    });
+    
+    if (!modelConfig) {
+      return res.status(404).json({
+        success: false,
+        error: 'Model not found'
+      });
+    }
+
+    // For free models, allow immediate access without authentication
+    if (modelConfig.accessType === 'free') {
+      return res.json({
+        success: true,
+        access: 'granted',
+        modelConfig: {
+          modelName: modelConfig.modelName,
+          displayName: modelConfig.displayName,
+          accessType: modelConfig.accessType,
+          pointsCost: 0,
+          sessionDurationMinutes: modelConfig.sessionDurationMinutes,
+          description: modelConfig.description
+        }
+      });
+    }
+
+    // For premium models, require authentication
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required for premium models'
+      });
+    }
+
+    // Verify token for premium models
+    const token = authHeader.split(' ')[1];
+    let userId;
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      userId = decoded.userId;
+    } catch (error) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid authentication token'
+      });
+    }
+
+    // Check if user already has an active session
+    const existingSession = await Session.findOne({
+      where: {
+        userId,
+        status: { [Op.in]: ['active', 'queued'] }
+      }
+    });
+
+    if (existingSession) {
+      // If the session is for the same model, allow access
+      if (existingSession.agentId === modelConfig.agentId) {
+        return res.json({
+          success: true,
+          access: 'granted',
+          modelConfig: {
+            modelName: modelConfig.modelName,
+            displayName: modelConfig.displayName,
+            accessType: modelConfig.accessType,
+            pointsCost: modelConfig.pointsCost,
+            sessionDurationMinutes: modelConfig.sessionDurationMinutes
+          },
+          existingSession: {
+            id: existingSession.id,
+            status: existingSession.status,
+            agentId: existingSession.agentId
+          }
+        });
+      } else {
+        // User has a session for a different model
+        return res.json({
+          success: false,
+          error: 'You already have an active or queued session with another model',
+          existingSession: {
+            id: existingSession.id,
+            status: existingSession.status,
+            agentId: existingSession.agentId
+          }
+        });
+      }
+    }
+
+    // For premium models, check points and availability
+    const user = await User.findByPk(userId);
+    if (user.points < modelConfig.pointsCost) {
+      return res.json({
+        success: false,
+        error: 'Insufficient points',
+        required: modelConfig.pointsCost,
+        current: user.points
+      });
+    }
+
+    // Check current active sessions for this model
+    const activeSessions = await Session.count({
+      where: {
+        agentId: modelConfig.agentId,
+        status: 'active'
+      }
+    });
+
+    const queueLength = await Queue.count({
+      where: {
+        agentId: modelConfig.agentId,
+        status: 'waiting'
+      }
+    });
+
+    res.json({
+      success: true,
+      access: 'available',
+      modelConfig: {
+        modelName: modelConfig.modelName,
+        displayName: modelConfig.displayName,
+        accessType: modelConfig.accessType,
+        pointsCost: modelConfig.pointsCost,
+        sessionDurationMinutes: modelConfig.sessionDurationMinutes
+      },
+      availability: {
+        isAvailable: activeSessions < modelConfig.maxConcurrentSessions,
+        activeSessions,
+        maxConcurrent: modelConfig.maxConcurrentSessions,
+        queueLength,
+        estimatedWaitMinutes: queueLength * modelConfig.sessionDurationMinutes
+      }
+    });
+
+  } catch (error) {
+    console.error('Error checking model access:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check model access'
+    });
+  }
+});
+
+// Enhanced session booking
+app.post('/api/sessions/book', requireAuth, async (req, res) => {
+  try {
+    const { modelName } = req.body;
+    const userId = req.user.id;
+
+    if (!modelName) {
+      return res.status(400).json({
+        success: false,
+        error: 'Model name is required'
+      });
+    }
+
+    // Get model configuration
+    const modelConfig = await ModelConfig.findOne({
+      where: { modelName, isActive: true }
+    });
+
+    if (!modelConfig) {
+      return res.status(404).json({
+        success: false,
+        error: 'Model not found or inactive'
+      });
+    }
+
+    // Check if user already has an active session
+    const existingSession = await Session.findOne({
+      where: {
+        userId,
+        status: { [Op.in]: ['active', 'queued'] }
+      }
+    });
+
+    if (existingSession) {
+      return res.status(400).json({
+        success: false,
+        error: 'You already have an active or queued session'
+      });
+    }
+
+    // For free models, create immediate session
+    if (modelConfig.accessType === 'free') {
+      const sessionId = Date.now().toString() + Math.random().toString(36).substring(2, 11);
+      
+      const session = await Session.create({
+        id: sessionId,
+        userId,
+        agentId: modelConfig.agentId,
+        type: 'public',
+        status: 'active',
+        duration: 0, // Unlimited for free
+        pointsCost: 0,
+        startTime: new Date()
+      });
+
+      return res.json({
+        success: true,
+        session: {
+          id: sessionId,
+          modelName: modelConfig.modelName,
+          status: 'active',
+          type: 'public',
+          redirectUrl: `/${modelConfig.modelName}`
+        }
+      });
+    }
+
+    // For premium models, handle points and queue
+    const user = await User.findByPk(userId);
+    
+    if (user.points < modelConfig.pointsCost) {
+      return res.status(400).json({
+        success: false,
+        error: 'Insufficient points',
+        required: modelConfig.pointsCost,
+        current: user.points
+      });
+    }
+
+    // Check if model is available
+    const activeSessions = await Session.count({
+      where: {
+        agentId: modelConfig.agentId,
+        status: 'active'
+      }
+    });
+
+    const sessionId = Date.now().toString() + Math.random().toString(36).substring(2, 11);
+
+    if (activeSessions < modelConfig.maxConcurrentSessions) {
+      // Model is available - start session immediately
+      
+      // Deduct points
+      const result = await spendUserPoints(
+        userId,
+        modelConfig.pointsCost,
+        `Private session with ${modelConfig.displayName}`,
+        sessionId
+      );
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          error: result.error
+        });
+      }
+
+      const startTime = new Date();
+      const endTime = new Date(startTime.getTime() + modelConfig.sessionDurationMinutes * 60 * 1000);
+
+      const session = await Session.create({
+        id: sessionId,
+        userId,
+        agentId: modelConfig.agentId,
+        type: 'private',
+        status: 'active',
+        duration: modelConfig.sessionDurationMinutes,
+        pointsCost: modelConfig.pointsCost,
+        startTime,
+        endTime
+      });
+
+      // Set session end timer
+      setTimeout(() => {
+        endSession(sessionId);
+      }, modelConfig.sessionDurationMinutes * 60 * 1000);
+
+      res.json({
+        success: true,
+        session: {
+          id: sessionId,
+          modelName: modelConfig.modelName,
+          status: 'active',
+          type: 'private',
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          durationMinutes: modelConfig.sessionDurationMinutes,
+          redirectUrl: `/${modelConfig.modelName}?session=${sessionId}`
+        },
+        newBalance: result.newBalance
+      });
+
+    } else {
+      // Model is busy - add to queue
+      const queuePosition = await Queue.count({
+        where: {
+          agentId: modelConfig.agentId,
+          status: 'waiting'
+        }
+      }) + 1;
+
+      const queueId = Date.now().toString() + Math.random().toString(36).substring(2, 11);
+      const estimatedWaitMinutes = (queuePosition - 1) * modelConfig.sessionDurationMinutes;
+
+      await Queue.create({
+        id: queueId,
+        userId,
+        agentId: modelConfig.agentId,
+        position: queuePosition,
+        status: 'waiting',
+        estimatedWaitTime: estimatedWaitMinutes,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
+      });
+
+      res.json({
+        success: true,
+        session: {
+          id: sessionId,
+          modelName: modelConfig.modelName,
+          status: 'queued',
+          type: 'private',
+          queuePosition,
+          estimatedWaitMinutes,
+          message: `You're #${queuePosition} in queue. Estimated wait: ${estimatedWaitMinutes} minutes`
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Error booking session:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to book session'
+    });
+  }
+});
+
+// Book private session with points (LEGACY - kept for backward compatibility)
 app.post('/api/sessions/book-private', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1267,7 +1784,7 @@ app.post('/api/sessions/book-private', async (req, res) => {
     }
 
     // Create session ID
-    const sessionId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+    const sessionId = Date.now().toString() + Math.random().toString(36).substring(2, 11);
 
     // Spend points for the session
     const result = await spendUserPoints(
@@ -1425,6 +1942,11 @@ app.get('/api/sessions/current', async (req, res) => {
       });
     }
 
+    // Get model configuration to include modelName
+    const modelConfig = await ModelConfig.findOne({
+      where: { agentId: session.agentId }
+    });
+
     // Calculate remaining time for active sessions
     let remainingTime = null;
     if (session.status === 'active' && session.endTime) {
@@ -1438,6 +1960,7 @@ app.get('/api/sessions/current', async (req, res) => {
       session: {
         id: session.id,
         agentId: session.agentId,
+        modelName: modelConfig ? modelConfig.modelName : null,
         status: session.status,
         queuePosition: session.queuePosition,
         estimatedWaitMinutes: session.estimatedWaitTime,

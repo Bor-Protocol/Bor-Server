@@ -1,0 +1,68 @@
+
+> borp-server@1.0.0 start
+> node src/index.js
+
+Server running on port 6969
+WebSocket server available at ws://localhost:6969
+Accepting connections from all origins
+Connected to SQLite database successfully
+Database synchronized
+Connected to SQLite successfully
+All models synchronized
+Model configurations already exist, skipping seed
+Initial counts loaded - Comments: 482 Users: 3
+Starting points regeneration system...
+Checking points regeneration for 0 users
+Cleaned up 0 expired sessions
+Checking points regeneration for 0 users
+Checking points regeneration for 0 users
+Client connected: U11lN6jkca8KIbvtAAAC - User: anonymous
+Client disconnected: U11lN6jkca8KIbvtAAAC - User: anonymous
+Client connected: Gu1Cl_jRLrWG-XNHAAAF - User: anonymous
+Login attempt for email: aa@a.com
+User found: aa@a.com, checking password...
+Password validation result: true
+Client disconnected: Gu1Cl_jRLrWG-XNHAAAF - User: anonymous
+User authenticated: aa@a.com (1753396775054)
+Client connected: qL60KAl212YRPcuyAAAI - User: aa@a.com (1753396775054)
+Authenticated user count: 1
+Checking points regeneration for 0 users
+Transaction created: spend 50 points for user aa@a.com (830 → 780)
+Points spent: aa@a.com spent 50 points. New balance: 830
+Authenticated user count after disconnect: 0
+Client disconnected: qL60KAl212YRPcuyAAAI - User: aa@a.com (1753396775054)
+User authenticated: aa@a.com (1753396775054)
+Client connected: nh3Lxm9nnN4trU_9AAAK - User: aa@a.com (1753396775054)
+Authenticated user count: 1
+Authenticated user count after disconnect: 0
+Client disconnected: nh3Lxm9nnN4trU_9AAAK - User: aa@a.com (1753396775054)
+User authenticated: aa@a.com (1753396775054)
+Client connected: BL7LMaFs7nn0TeSQAAAO - User: aa@a.com (1753396775054)
+Authenticated user count: 1
+Authenticated user count after disconnect: 0
+Client disconnected: BL7LMaFs7nn0TeSQAAAO - User: aa@a.com (1753396775054)
+User authenticated: aa@a.com (1753396775054)
+Client connected: AtYaGI_oA30z6gyvAAAQ - User: aa@a.com (1753396775054)
+Authenticated user count: 1
+Authenticated user count after disconnect: 0
+Client disconnected: AtYaGI_oA30z6gyvAAAQ - User: aa@a.com (1753396775054)
+User authenticated: aa@a.com (1753396775054)
+Client connected: CjlcNIEMQ9TLcARlAAAS - User: aa@a.com (1753396775054)
+Authenticated user count: 1
+Checking points regeneration for 0 users
+Authenticated user count after disconnect: 0
+Client disconnected: CjlcNIEMQ9TLcARlAAAS - User: aa@a.com (1753396775054)
+User authenticated: aa@a.com (1753396775054)
+Client connected: 0T7leebkWttsl6uYAAAW - User: aa@a.com (1753396775054)
+Authenticated user count: 1
+Checking points regeneration for 0 users
+Checking points regeneration for 0 users
+User authenticated: aaa@a.com (1753397063741)
+Client connected: eZjdCLhklpIxTDemAAAY - User: aaa@a.com (1753397063741)
+Authenticated user count: 2
+Checking points regeneration for 0 users
+Authenticated user count after disconnect: 1
+Client disconnected: eZjdCLhklpIxTDemAAAY - User: aaa@a.com (1753397063741)
+User authenticated: aaa@a.com (1753397063741)
+Client connected: 2sdK1HRZfO_eHi8XAAAa - User: aaa@a.com (1753397063741)
+Authenticated user count: 2
