@@ -20,10 +20,26 @@ const app = express();
 const httpServer = createServer(app);
 
 // Configure CORS
+const allowedOrigins = [
+  'https://bor-ui.vercel.app',
+  'https://bor-ui-git-main-r-a-b-a-d-o-ns-projects.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
+
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    return callback(new Error('Not allowed by CORS'));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['*'],  // Allow all headers
+  allowedHeaders: ['*'],
   credentials: true
 }));
 app.use(express.json());
@@ -31,7 +47,7 @@ app.use(express.json());
 // Configure Socket.IO with CORS
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     allowedHeaders: ["*"],
     credentials: true
