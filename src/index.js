@@ -266,6 +266,21 @@ io.on('connection', (socket) => {
 /******************** */
 
 /*organize************** */
+ // Add this before other routes
+ app.get('/', (req, res) => {
+  res.json({
+    status: 'Server is running!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    database: 'connected',
+    timestamp: new Date().toISOString()
+  });
+});
 //api works : 
 app.get('/api/streams/:agentId/unread-comments', async (req, res) => {
   try {

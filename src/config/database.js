@@ -2,6 +2,7 @@ import { Sequelize } from 'sequelize';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import pg from 'pg';
 
 // Get the directory name for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -19,6 +20,7 @@ const getDatabaseConfig = () => {
     console.log('🐘 Using PostgreSQL database');
     return new Sequelize(process.env.DATABASE_URL, {
       dialect: 'postgres',
+      dialectModule: pg, // Explicitly provide the pg module
       dialectOptions: {
         ssl: process.env.NODE_ENV === 'production' ? {
           require: true,
@@ -40,6 +42,7 @@ const getDatabaseConfig = () => {
     console.log('🐘 Using Vercel PostgreSQL database');
     return new Sequelize(process.env.POSTGRES_URL, {
       dialect: 'postgres',
+      dialectModule: pg, // Explicitly provide the pg module
       dialectOptions: {
         ssl: {
           require: true,
