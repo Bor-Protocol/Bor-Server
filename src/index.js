@@ -19,13 +19,7 @@ dotenv.config();
 const app = express();
 const httpServer = createServer(app);
 
-// Configure CORS
-const allowedOrigins = [
-  'https://bor-ui.vercel.app',
-  'https://bor-ui-git-main-r-a-b-a-d-o-ns-projects.vercel.app',
-  'http://localhost:5173',
-  'http://localhost:3000'
-];
+// Configure CORS - Allow frontend to access backend
 
 app.use(cors({
   origin: '*',
