@@ -1,15 +1,18 @@
-FROM oven/bun:1
+FROM node:18-alpine
 
-WORKDIR /usr/src/app
+WORKDIR /app
 
+# Copy package files
 COPY package*.json ./
-COPY .env ./
 
-RUN bun install
+# Install dependencies
+RUN npm install
 
+# Copy all files except .env (Railway provides env vars)
 COPY . .
 
+# Expose port
 EXPOSE 6969
-EXPOSE 8080
 
-CMD ["bun", "start"]
+# Start the server
+CMD ["npm", "start"]
