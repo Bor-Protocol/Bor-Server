@@ -202,6 +202,7 @@ io.on('connection', (socket) => {
         handle: comment.handle
       });
 
+
       io.emit('comment_received', { 
         newComment: newComment.toJSON(), 
         commentCount 
@@ -292,14 +293,13 @@ app.get('/api/streams/:agentId/unread-comments', async (req, res) => {
     
     const comments = await Comment.findAll({
       where: {
-        readByAgent: false,
-        createdAt: {
-          [Op.gte]: fifteenMinutesAgo
-        }
+        readByAgent: false
       },
+
       order: [['createdAt', 'DESC']],
       limit: 1
     });
+
 
     res.json({ 
       comments,
@@ -455,7 +455,7 @@ app.post('/api/ai-responses', async (req, res) => {
     let handle;
     let pfp;
 
-    if (requestBody.replyToUser) {
+   /* if (requestBody.replyToUser) {
       try {
         const userProfile = await UserProfile.findOne({ publicKey: requestBody.replyToUser });
         handle = userProfile?.handle;
@@ -464,7 +464,7 @@ app.post('/api/ai-responses', async (req, res) => {
         console.error('Error fetching user profile:', error);
         // Continue execution without the profile info rather than failing the whole request
       }
-    }
+    }*/
 
     // // Emit animation update if provided
     // if (requestBody.animation) {
@@ -487,6 +487,7 @@ app.post('/api/ai-responses', async (req, res) => {
 
     // Emit response with appropriate channel
     if (!agentId) {
+      console.error('what abdo 1');
       io.emit('ai_response', {
         id: requestBody.id,
         agentId: agentId || undefined,
@@ -506,6 +507,7 @@ app.post('/api/ai-responses', async (req, res) => {
         thought: requestBody.thought,
       });
     } else {
+
       console.log('EMIT ai_response', { agentId, requestBody });
       io.emit(`${agentId}_ai_response`, {
         id: requestBody.id,
@@ -526,7 +528,7 @@ app.post('/api/ai-responses', async (req, res) => {
         thought: requestBody.thought,
       });
     }
-
+    
     res.status(200).json({ success: true });
   } catch (error) {
     console.error('Error generating AI response:', error);
