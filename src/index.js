@@ -305,7 +305,7 @@ app.get('/api/streams/:agentId/unread-comments', async (req, res) => {
       comments,
       metadata: {
         count: comments.length,
-        since: fifteenMinutesAgo.toISOString(),
+      //  since: fifteenMinutesAgo.toISOString(),
         hasMore: comments.length >= limit
       }
     });
