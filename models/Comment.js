@@ -28,8 +28,7 @@ const Comment = sequelize.define('Comment', {
     allowNull: true
   },
   readByAgent: {
-    type: DataTypes.BOOLEAN,
-    defaultValue: false
+    type: DataTypes.NUMBER,
   },
   createdAt: {
     type: DataTypes.DATE,

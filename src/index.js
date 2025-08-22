@@ -199,7 +199,8 @@ io.on('connection', (socket) => {
         agentId,
         user: comment.user,
         avatar: comment.avatar,
-        handle: comment.handle
+        handle: comment.handle,
+        readByAgent: 0
       });
 
 
@@ -293,14 +294,18 @@ app.get('/api/streams/:agentId/unread-comments', async (req, res) => {
     
     const comments = await Comment.findAll({
       where: {
-        readByAgent: false
+        readByAgent: 0
       },
 
       order: [['createdAt', 'DESC']],
       limit: 1
     });
 
+    const commentIds = comments?.map(comment => comment.id) ?? [];
+    const commentMSG = comments?.map(comment => comment.message) ?? [];
 
+    console.error(`abdos commentIds` + JSON.stringify(commentIds));
+    console.error(`abdos commentMSG` + JSON.stringify(commentMSG));
     res.json({ 
       comments,
       metadata: {
@@ -540,15 +545,17 @@ app.post('/api/ai-responses', async (req, res) => {
 
 async function markCommentsAsRead(commentIds) {
   try {
+    console.error("mark comments as read");
+
     const result = await Comment.update(
-      { readByAgent: true },
+      { readByAgent: 1 },
       {
         where: {
           id: { [Op.in]: commentIds }
         }
       }
     );
-
+    console.error("mark comments as read"+JSON.stringify(result));
     if (result[0] === 0) {
       return { success: false, error: 'No comments found' };
     }
@@ -564,6 +571,7 @@ async function markCommentsAsRead(commentIds) {
 }
 app.post('/api/comments/mark-read', async (req, res) => {
   try {
+
     const { commentIds } = req.body;
 
     if (!Array.isArray(commentIds)) {
