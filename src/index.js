@@ -290,11 +290,14 @@ app.get('/api/streams/:agentId/unread-comments', async (req, res) => {
     const { agentId } = req.params;
     const limit = parseInt(req.query.limit) || 10;
     
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     
     const comments = await Comment.findAll({
       where: {
-        readByAgent: 0
+        readByAgent: 0,
+        createdAt: {
+          [Op.gte]: oneHourAgo
+        }
       },
 
       order: [['createdAt', 'DESC']],
