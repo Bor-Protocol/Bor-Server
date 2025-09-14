@@ -1,8 +1,8 @@
 import * as https from 'https';
 
 const BUNNY_STORAGE_HOST = process.env.BUNNY_STORAGE_HOST || 'storage.bunnycdn.com';
-const BUNNY_STORAGE_PATH = process.env.BUNNY_STORAGE_PATH || '/borstorage1/speech';
-const BUNNY_CDN_URL = process.env.BUNNY_CDN_URL || 'https://borstorage1.b-cdn.net/speech';
+const BUNNY_STORAGE_PATH = process.env.BUNNY_STORAGE_PATH || '/borstorage2/speech';
+const BUNNY_CDN_URL = process.env.BUNNY_CDN_URL || 'https://borstorage2.b-cdn.net/speech';
 
 export const uploadAudioToBunnyCDN = async (audioBuffer) => {
   const timestamp = Date.now();
